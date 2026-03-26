@@ -1,0 +1,50 @@
+name: Din Tai Fung Reservation Bot
+
+on:
+  schedule:
+    # Midnight AZ time (MST = UTC-7, no DST) on Sundays → 07:00 UTC
+    - cron: '0 7 * * 0'
+  workflow_dispatch:  # Manual trigger for testing
+
+jobs:
+  reserve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Create screenshots directory
+        run: mkdir -p screenshots
+
+      - name: Run reservation bot
+        env:
+          PARTY_SIZE:    ${{ vars.PARTY_SIZE }}
+          CONTACT_NAME:  ${{ secrets.CONTACT_NAME }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+          CONTACT_PHONE: ${{ secrets.CONTACT_PHONE }}
+          YELP_EMAIL:    ${{ secrets.YELP_EMAIL }}
+          YELP_PASSWORD: ${{ secrets.YELP_PASSWORD }}
+        run: python bot.py
+
+      - name: Upload screenshots (always, for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ github.run_id }}
+          path: screenshots/
+          retention-days: 7
