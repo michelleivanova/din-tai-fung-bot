@@ -37,8 +37,7 @@ jobs:
           CONTACT_NAME:  ${{ secrets.CONTACT_NAME }}
           CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
           CONTACT_PHONE: ${{ secrets.CONTACT_PHONE }}
-          YELP_EMAIL:    ${{ secrets.YELP_EMAIL }}
-          YELP_PASSWORD: ${{ secrets.YELP_PASSWORD }}
+          YELP_SESSION:  ${{ secrets.YELP_SESSION }}
         run: python bot.py
 
       - name: Upload screenshots (always, for debugging)

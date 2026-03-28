@@ -1,4 +1,5 @@
 .env
+yelp_session.json
 screenshots/
 __pycache__/
 *.pyc

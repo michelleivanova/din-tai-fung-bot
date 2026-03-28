@@ -31,16 +31,25 @@ TARGET_DAYS    = {"Saturday", "Sunday"}   # Day names to accept
 CONTACT_NAME   = os.getenv("CONTACT_NAME", "")
 CONTACT_EMAIL  = os.getenv("CONTACT_EMAIL", "")
 CONTACT_PHONE  = os.getenv("CONTACT_PHONE", "")
-YELP_EMAIL     = os.getenv("YELP_EMAIL", "")
-YELP_PASSWORD  = os.getenv("YELP_PASSWORD", "")
+
+# Yelp session (JSON string from YELP_SESSION secret, created by save_session.py)
+YELP_SESSION   = os.getenv("YELP_SESSION", "")
+SESSION_FILE   = "yelp_session.json"
 
 SCREENSHOT_DIR = "screenshots"
 
 
 def run_bot():
+    # Write session JSON to file if provided via env secret
+    if YELP_SESSION:
+        with open(SESSION_FILE, "w") as f:
+            f.write(YELP_SESSION)
+        log.info("Loaded Yelp session from YELP_SESSION secret.")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
+
+        ctx_kwargs = dict(
             viewport={"width": 1280, "height": 900},
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -48,11 +57,14 @@ def run_bot():
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
         )
+        if os.path.exists(SESSION_FILE):
+            ctx_kwargs["storage_state"] = SESSION_FILE
+
+        context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
 
         try:
-            if YELP_EMAIL and YELP_PASSWORD:
-                yelp_login(page)
+            pass  # session restored from cookies — no login step needed
 
             log.info("Navigating to reservation page...")
             page.goto(RESERVATION_URL, wait_until="networkidle", timeout=30_000)
@@ -143,16 +155,6 @@ def screenshot(page, name):
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
-
-def yelp_login(page):
-    log.info("Logging in to Yelp...")
-    page.goto("https://www.yelp.com/login", wait_until="networkidle", timeout=30_000)
-    page.fill('input[name="email"]', YELP_EMAIL)
-    page.fill('input[name="password"]', YELP_PASSWORD)
-    page.click('button[type="submit"]')
-    page.wait_for_load_state("networkidle", timeout=15_000)
-    log.info("Yelp login done.")
-
 
 def set_party_size(page):
     log.info(f"Setting party size to {PARTY_SIZE}...")
