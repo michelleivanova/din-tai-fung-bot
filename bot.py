@@ -17,6 +17,8 @@ import os
 import sys
 import json
 import logging
+import random
+import time
 from datetime import datetime, timedelta
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -84,48 +86,56 @@ def run_bot():
                 date_str = target_date.strftime("%Y-%m-%d")
                 log.info(f"Trying {day_name} {date_str}...")
 
-                for time_str in PREFERRED_TIMES:
-                    url = (
-                        f"{RESERVATION_URL}"
-                        f"?date={date_str}&time={time_str}&covers={PARTY_SIZE}"
-                    )
-                    log.info(f"Loading {url}")
+                # Load once per date — Yelp shows nearby slots automatically.
+                # Use middle of preferred window so nearby slots span the range.
+                mid_time = PREFERRED_TIMES[len(PREFERRED_TIMES) // 2]
+                url = (
+                    f"{RESERVATION_URL}"
+                    f"?date={date_str}&time={mid_time}&covers={PARTY_SIZE}"
+                )
+                log.info(f"Loading {url}")
+                human_delay()
+                page.goto(url, wait_until="networkidle", timeout=30_000)
+                page.wait_for_timeout(random.randint(2000, 4000))
+                screenshot(page, f"01_{date_str}")
+
+                # Check if we got blocked
+                if "you have been blocked" in (page.content() or "").lower():
+                    log.error("Yelp blocked us! Waiting before retry...")
+                    page.wait_for_timeout(random.randint(10_000, 20_000))
                     page.goto(url, wait_until="networkidle", timeout=30_000)
-                    page.wait_for_timeout(2_000)
-                    screenshot(page, f"01_{date_str}_{time_str}")
+                    page.wait_for_timeout(random.randint(3000, 5000))
+                    screenshot(page, f"01_{date_str}_retry")
 
-                    slot = find_preferred_slot(page)
-                    if slot is None:
-                        log.info(f"No 5–7 PM slots for {time_str} on {date_str}.")
-                        continue
+                slot = find_preferred_slot(page)
+                if slot is None:
+                    log.info(f"No preferred slots on {date_str}.")
+                    continue
 
-                    log.info(f"Clicking slot: {slot.inner_text()}")
-                    slot.click()
-                    page.wait_for_timeout(3_000)
-                    screenshot(page, f"02_checkout_{date_str}")
+                log.info(f"Clicking slot: {slot.inner_text()}")
+                human_delay()
+                slot.click()
+                page.wait_for_timeout(random.randint(3000, 5000))
+                screenshot(page, f"02_checkout_{date_str}")
 
-                    # Verify we landed on the checkout page
-                    if "/checkout/" not in page.url:
-                        log.warning("Did not navigate to checkout page, trying next slot.")
-                        continue
+                if "/checkout/" not in page.url:
+                    log.warning("Did not navigate to checkout page, trying next date.")
+                    continue
 
-                    fill_checkout_form(page)
-                    screenshot(page, f"03_filled_{date_str}")
+                fill_checkout_form(page)
+                screenshot(page, f"03_filled_{date_str}")
 
-                    click_confirm(page)
-                    page.wait_for_timeout(5_000)
-                    screenshot(page, "04_confirmed")
+                click_confirm(page)
+                page.wait_for_timeout(5_000)
+                screenshot(page, "04_confirmed")
 
-                    log.info(f"Reservation booked for {day_name} {date_str}!")
-                    booked = True
-                    break
-
-                if booked:
-                    break
+                log.info(f"Reservation booked for {day_name} {date_str}!")
+                booked = True
+                break
 
             if not booked:
                 raise RuntimeError(
-                    "No 5–7 PM slots found on Saturday or Sunday."
+                    f"No preferred slots found on {', '.join(TARGET_DAYS)}."
                 )
 
         except Exception as exc:
@@ -165,6 +175,13 @@ def is_preferred_time(text: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+def human_delay():
+    """Sleep for a random human-like duration to avoid bot detection."""
+    delay = random.uniform(1.5, 4.0)
+    log.info(f"Waiting {delay:.1f}s...")
+    time.sleep(delay)
 
 
 def screenshot(page, name):
