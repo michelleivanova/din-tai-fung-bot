@@ -37,11 +37,15 @@ jobs:
 
       - name: Run reservation bot
         env:
-          PARTY_SIZE:    ${{ vars.PARTY_SIZE }}
-          CONTACT_NAME:  ${{ secrets.CONTACT_NAME }}
-          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
-          CONTACT_PHONE: ${{ secrets.CONTACT_PHONE }}
-          YELP_SESSION:  ${{ secrets.YELP_SESSION }}
+          PARTY_SIZE:       ${{ vars.PARTY_SIZE }}
+          CONTACT_NAME:     ${{ secrets.CONTACT_NAME }}
+          CONTACT_EMAIL:    ${{ secrets.CONTACT_EMAIL }}
+          CONTACT_PHONE:    ${{ secrets.CONTACT_PHONE }}
+          YELP_SESSION:     ${{ secrets.YELP_SESSION }}
+          TARGET_DAYS:      ${{ vars.TARGET_DAYS }}
+          EARLIEST_HOUR:    ${{ vars.EARLIEST_HOUR }}
+          LATEST_HOUR:      ${{ vars.LATEST_HOUR }}
+          PREFERRED_TIMES:  ${{ vars.PREFERRED_TIMES }}
         run: python bot.py
 
       - name: Upload screenshots (always, for debugging)
