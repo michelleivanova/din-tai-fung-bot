@@ -31,11 +31,12 @@ log = logging.getLogger(__name__)
 BUSINESS_ALIAS = "din-tai-fung-scottsdale-5"
 RESERVATION_URL = f"https://www.yelp.com/reservations/{BUSINESS_ALIAS}"
 
-# Reservation preferences
+# Reservation preferences (overridable via env vars)
 PARTY_SIZE     = int(os.getenv("PARTY_SIZE", "5"))
-EARLIEST_HOUR  = 17   # 5:00 PM (24h)
-LATEST_HOUR    = 19   # 7:00 PM (slots before 7 PM, i.e. 5:00–6:45)
-TARGET_DAYS    = {"Saturday", "Sunday"}
+EARLIEST_HOUR  = int(os.getenv("EARLIEST_HOUR", "17"))
+LATEST_HOUR    = int(os.getenv("LATEST_HOUR", "19"))
+_days_env      = os.getenv("TARGET_DAYS", "Saturday,Sunday")
+TARGET_DAYS    = set(d.strip() for d in _days_env.split(","))
 
 # Contact info (stored as GitHub secrets)
 CONTACT_NAME   = os.getenv("CONTACT_NAME", "")
@@ -49,7 +50,8 @@ SESSION_FILE   = "yelp_session.json"
 SCREENSHOT_DIR = "screenshots"
 
 # Preferred times to search, in order of preference (24h format for URL)
-PREFERRED_TIMES = ["1700", "1730", "1800", "1830", "1900"]
+_times_env = os.getenv("PREFERRED_TIMES", "1700,1730,1800,1830,1900")
+PREFERRED_TIMES = [t.strip() for t in _times_env.split(",")]
 
 
 def run_bot():
