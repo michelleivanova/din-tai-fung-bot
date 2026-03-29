@@ -19,7 +19,8 @@ YELP_URL = "https://www.yelp.com/login"
 
 def main():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        # Use real Chrome to avoid Google blocking automated Chromium
+        browser = p.chromium.launch(headless=False, channel="chrome")
         context = browser.new_context()
         page = context.new_page()
 

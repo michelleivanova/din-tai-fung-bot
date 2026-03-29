@@ -3,10 +3,19 @@
 Din Tai Fung Fashion Square (Scottsdale) reservation bot.
 Runs at midnight AZ time (07:00 UTC) on Sundays via GitHub Actions.
 Targets: party of 5, 5–7 PM, Saturday or Sunday.
+
+Yelp reservation page structure (discovered via Chrome inspection):
+  - URL params: ?date=YYYY-MM-DD&time=HHMM&covers=N
+  - Availability API: GET /reservations/{biz}/search_availability
+  - Time slots: <button type="submit"> with time text like "5:00 pm"
+  - Clicking a slot navigates to /reservations/{biz}/checkout/{date}/{time}/{covers}
+  - Checkout form: First Name, Last Name, Mobile Number, Email, Requests
+  - Confirm button: <button type="submit"> with text "Confirm"
 """
 
 import os
 import sys
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -19,28 +28,31 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-RESERVATION_URL = "https://www.yelp.com/reservations/din-tai-fung-scottsdale-5"
+BUSINESS_ALIAS = "din-tai-fung-scottsdale-5"
+RESERVATION_URL = f"https://www.yelp.com/reservations/{BUSINESS_ALIAS}"
 
 # Reservation preferences
 PARTY_SIZE     = int(os.getenv("PARTY_SIZE", "5"))
 EARLIEST_HOUR  = 17   # 5:00 PM (24h)
 LATEST_HOUR    = 19   # 7:00 PM (slots before 7 PM, i.e. 5:00–6:45)
-TARGET_DAYS    = {"Saturday", "Sunday"}   # Day names to accept
+TARGET_DAYS    = {"Saturday", "Sunday"}
 
 # Contact info (stored as GitHub secrets)
 CONTACT_NAME   = os.getenv("CONTACT_NAME", "")
 CONTACT_EMAIL  = os.getenv("CONTACT_EMAIL", "")
 CONTACT_PHONE  = os.getenv("CONTACT_PHONE", "")
 
-# Yelp session (JSON string from YELP_SESSION secret, created by save_session.py)
+# Yelp session (JSON string from YELP_SESSION secret)
 YELP_SESSION   = os.getenv("YELP_SESSION", "")
 SESSION_FILE   = "yelp_session.json"
 
 SCREENSHOT_DIR = "screenshots"
 
+# Preferred times to search, in order of preference (24h format for URL)
+PREFERRED_TIMES = ["1700", "1730", "1800", "1830", "1900"]
+
 
 def run_bot():
-    # Write session JSON to file if provided via env secret
     if YELP_SESSION:
         with open(SESSION_FILE, "w") as f:
             f.write(YELP_SESSION)
@@ -64,47 +76,55 @@ def run_bot():
         page = context.new_page()
 
         try:
-            pass  # session restored from cookies — no login step needed
-
-            log.info("Navigating to reservation page...")
-            page.goto(RESERVATION_URL, wait_until="networkidle", timeout=30_000)
-            screenshot(page, "01_loaded")
-
-            # Try Saturday first, then Sunday
             booked = False
             for target_date in upcoming_target_dates():
                 day_name = target_date.strftime("%A")
                 date_str = target_date.strftime("%Y-%m-%d")
                 log.info(f"Trying {day_name} {date_str}...")
 
-                try:
-                    set_party_size(page)
-                    select_date(page, target_date)
-                    screenshot(page, f"02_date_{date_str}")
+                for time_str in PREFERRED_TIMES:
+                    url = (
+                        f"{RESERVATION_URL}"
+                        f"?date={date_str}&time={time_str}&covers={PARTY_SIZE}"
+                    )
+                    log.info(f"Loading {url}")
+                    page.goto(url, wait_until="networkidle", timeout=30_000)
+                    page.wait_for_timeout(2_000)
+                    screenshot(page, f"01_{date_str}_{time_str}")
 
                     slot = find_preferred_slot(page)
                     if slot is None:
-                        log.info(f"No 5–7 PM slots on {date_str}, trying next day.")
+                        log.info(f"No 5–7 PM slots for {time_str} on {date_str}.")
                         continue
 
+                    log.info(f"Clicking slot: {slot.inner_text()}")
                     slot.click()
-                    page.wait_for_timeout(1_500)
-                    screenshot(page, f"03_slot_selected_{date_str}")
+                    page.wait_for_timeout(3_000)
+                    screenshot(page, f"02_checkout_{date_str}")
 
-                    confirm_reservation(page)
+                    # Verify we landed on the checkout page
+                    if "/checkout/" not in page.url:
+                        log.warning("Did not navigate to checkout page, trying next slot.")
+                        continue
+
+                    fill_checkout_form(page)
+                    screenshot(page, f"03_filled_{date_str}")
+
+                    click_confirm(page)
+                    page.wait_for_timeout(5_000)
                     screenshot(page, "04_confirmed")
+
                     log.info(f"Reservation booked for {day_name} {date_str}!")
                     booked = True
                     break
 
-                except Exception as exc:
-                    log.warning(f"Failed for {date_str}: {exc}")
-                    screenshot(page, f"error_{date_str}")
-                    # Reload and try next date
-                    page.goto(RESERVATION_URL, wait_until="networkidle", timeout=30_000)
+                if booked:
+                    break
 
             if not booked:
-                raise RuntimeError("No 5–7 PM slots found on Saturday or Sunday this week.")
+                raise RuntimeError(
+                    "No 5–7 PM slots found on Saturday or Sunday."
+                )
 
         except Exception as exc:
             log.error(f"Bot failed: {exc}")
@@ -129,13 +149,12 @@ def upcoming_target_dates():
             dates.append(d)
         if len(dates) == 2:
             break
-    # Put Saturday first
     dates.sort(key=lambda d: 0 if d.strftime("%A") == "Saturday" else 1)
     return dates
 
 
 def is_preferred_time(text: str) -> bool:
-    """Return True if a time string (e.g. '5:30 PM') falls in 5–7 PM window."""
+    """Return True if a time string (e.g. '5:30 pm') falls in 5–7 PM window."""
     text = text.strip().upper()
     for fmt in ("%I:%M %p", "%I %p"):
         try:
@@ -148,151 +167,113 @@ def is_preferred_time(text: str) -> bool:
 
 def screenshot(page, name):
     path = f"{SCREENSHOT_DIR}/{name}.png"
-    page.screenshot(path=path)
-    log.info(f"Screenshot: {path}")
+    try:
+        page.screenshot(path=path)
+        log.info(f"Screenshot: {path}")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
 
-def set_party_size(page):
-    log.info(f"Setting party size to {PARTY_SIZE}...")
-    candidates = [
-        f'button[aria-label="{PARTY_SIZE} people"]',
-        f'button[aria-label="{PARTY_SIZE} guest"]',
-        f'[data-testid="covers-{PARTY_SIZE}"]',
-        f'button[value="{PARTY_SIZE}"]',
-    ]
-    for sel in candidates:
-        try:
-            page.click(sel, timeout=4_000)
-            log.info(f"Party size set via: {sel}")
-            return
-        except PlaywrightTimeout:
-            continue
-
-    for sel in ['select[name="covers"]', 'select[id*="covers"]', 'select[id*="party"]']:
-        try:
-            page.select_option(sel, str(PARTY_SIZE), timeout=4_000)
-            log.info(f"Party size set via select: {sel}")
-            return
-        except PlaywrightTimeout:
-            continue
-
-    try:
-        page.get_by_role("button", name=str(PARTY_SIZE)).first.click(timeout=4_000)
-        log.info("Party size set via role button.")
-        return
-    except Exception:
-        pass
-
-    log.warning("Could not explicitly set party size — using page default.")
-
-
-def select_date(page, target_date):
-    """Attempt to click the target date in the date picker."""
-    log.info(f"Selecting date {target_date}...")
-    # Try aria-label like "Sunday, April 13, 2025"
-    label = target_date.strftime("%A, %B %-d, %Y")
-    label_alt = target_date.strftime("%B %-d, %Y")
-
-    for sel in [
-        f'button[aria-label="{label}"]',
-        f'td[aria-label="{label}"]',
-        f'[data-date="{target_date.isoformat()}"]',
-        f'button[data-testid="{target_date.isoformat()}"]',
-    ]:
-        try:
-            page.click(sel, timeout=4_000)
-            log.info(f"Date selected via: {sel}")
-            page.wait_for_timeout(1_500)
-            return
-        except PlaywrightTimeout:
-            continue
-
-    # Fallback: find a cell whose text is the day number and matches the month
-    day_num = str(target_date.day)
-    try:
-        cells = page.query_selector_all('td[role="gridcell"] button, td.rdp-day button, [class*="day"]:not([disabled])')
-        for cell in cells:
-            if (cell.inner_text() or "").strip() == day_num:
-                cell.click()
-                page.wait_for_timeout(1_500)
-                log.info(f"Date selected via day number cell: {day_num}")
-                return
-    except Exception:
-        pass
-
-    log.warning(f"Could not select date {target_date} — widget may auto-select next available.")
-
-
 def find_preferred_slot(page):
     """Return the first available time button in the 5–7 PM window, or None."""
     log.info("Looking for 5–7 PM slots...")
-    page.wait_for_timeout(3_000)
 
-    slot_selectors = [
-        'button[data-testid="reservation-time"]',
-        'button[data-testid*="time-slot"]',
-        '[class*="TimeSlot"]:not([disabled]):not([class*="unavailable"])',
-        '[class*="time-slot"]:not(.unavailable):not([disabled])',
-        'button[class*="time"]:not([disabled])',
-        '.reservation-time-slot:not(.disabled)',
-    ]
+    # Check for "No Availability" message first
+    no_avail = page.query_selector('text="No Availability"')
+    if no_avail:
+        log.info("Page shows 'No Availability'.")
+        return None
 
-    for sel in slot_selectors:
-        try:
-            page.wait_for_selector(sel, timeout=5_000)
-            slots = page.query_selector_all(sel)
-            if not slots:
-                continue
-            log.info(f"Found {len(slots)} total slot(s) via '{sel}'.")
-            for slot in slots:
-                text = (slot.inner_text() or "").strip()
-                if is_preferred_time(text):
-                    log.info(f"Preferred slot: '{text}'")
-                    return slot
-            log.info("No slots in 5–7 PM window via this selector.")
-            return None  # Found slots but none in window
-        except PlaywrightTimeout:
-            continue
-
-    # Last-resort: scan all enabled buttons for time-like text
-    buttons = page.query_selector_all("button:not([disabled])")
-    preferred = []
+    # Yelp renders time slots as <button type="submit"> with text like "5:00 pm"
+    # They appear under a "What's available" section
+    buttons = page.query_selector_all('button[type="submit"]')
     for btn in buttons:
         text = (btn.inner_text() or "").strip()
-        if ":" in text and ("AM" in text.upper() or "PM" in text.upper()):
-            if is_preferred_time(text):
-                preferred.append(btn)
+        if is_preferred_time(text) and btn.is_enabled():
+            log.info(f"Found preferred slot: '{text}'")
+            return btn
 
-    if preferred:
-        log.info(f"Found {len(preferred)} preferred slot(s) via fallback scan.")
-        return preferred[0]
+    # Fallback: scan all buttons for time-like text
+    all_buttons = page.query_selector_all("button:not([disabled])")
+    for btn in all_buttons:
+        text = (btn.inner_text() or "").strip()
+        if ":" in text and ("am" in text.lower() or "pm" in text.lower()):
+            if is_preferred_time(text):
+                log.info(f"Found preferred slot (fallback): '{text}'")
+                return btn
 
     log.info("No preferred slots found.")
     return None
 
 
-def confirm_reservation(page):
-    log.info("Filling contact details and confirming...")
+def fill_checkout_form(page):
+    """Fill the checkout form with contact details."""
+    log.info("Filling checkout form...")
     page.wait_for_timeout(2_000)
 
-    _fill_field(page, ['input[name="name"]', 'input[placeholder*="name" i]', 'input[id*="name" i]'], CONTACT_NAME)
-    _fill_field(page, ['input[type="email"]', 'input[name="email"]', 'input[placeholder*="email" i]'], CONTACT_EMAIL)
-    _fill_field(page, ['input[type="tel"]', 'input[name="phone"]', 'input[placeholder*="phone" i]'], CONTACT_PHONE)
+    # Split name into first/last (checkout has separate fields)
+    parts = CONTACT_NAME.split(None, 1) if CONTACT_NAME else ["", ""]
+    first_name = parts[0] if len(parts) > 0 else ""
+    last_name = parts[1] if len(parts) > 1 else ""
 
-    confirm_selectors = [
-        'button[type="submit"]',
-        'button[data-testid="confirm-reservation"]',
-        'button:text-is("Confirm")',
-        'button:text-is("Reserve")',
-        'button:text-is("Book")',
+    # First Name field
+    _clear_and_fill(page, 'input[placeholder=" "]:near(:text("First Name"))', first_name)
+    # Last Name field
+    _clear_and_fill(page, 'input[placeholder=" "]:near(:text("Last Name"))', last_name)
+    # Email field
+    _clear_and_fill(page, 'input[type="email"]', CONTACT_EMAIL)
+    # Phone field
+    _clear_and_fill(page, 'input[type="tel"]', CONTACT_PHONE)
+
+    log.info("Checkout form filled.")
+
+
+def _clear_and_fill(page, selector, value):
+    """Clear an input field and fill it with a value."""
+    if not value:
+        return
+    try:
+        el = page.query_selector(selector)
+        if el:
+            el.click()
+            page.keyboard.press("Meta+a")
+            el.fill(value)
+            log.info(f"Filled '{selector}' with value.")
+            return
+    except Exception as exc:
+        log.warning(f"Primary selector failed for '{selector}': {exc}")
+
+    # Fallback: try by label text
+    label_map = {
+        "email": CONTACT_EMAIL,
+        "tel": CONTACT_PHONE,
+    }
+    for input_type, val in label_map.items():
+        if value == val:
+            try:
+                el = page.query_selector(f'input[type="{input_type}"]')
+                if el:
+                    el.fill(value)
+                    return
+            except Exception:
+                pass
+
+
+def click_confirm(page):
+    """Click the Confirm reservation button."""
+    log.info("Clicking Confirm...")
+
+    selectors = [
         'button:has-text("Confirm")',
+        'button[type="submit"]:has-text("Confirm")',
+        'button:has-text("Complete Reservation")',
         'button:has-text("Reserve")',
     ]
-    for sel in confirm_selectors:
+    for sel in selectors:
         try:
             page.click(sel, timeout=5_000)
             log.info(f"Confirmed via: {sel}")
@@ -301,20 +282,7 @@ def confirm_reservation(page):
         except Exception:
             continue
 
-    raise RuntimeError("Could not find a confirm/submit button.")
-
-
-def _fill_field(page, selectors, value):
-    if not value:
-        return
-    for sel in selectors:
-        try:
-            el = page.query_selector(sel)
-            if el:
-                el.fill(value)
-                return
-        except Exception:
-            continue
+    raise RuntimeError("Could not find a Confirm button on checkout page.")
 
 
 if __name__ == "__main__":
