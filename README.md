@@ -66,6 +66,7 @@ Check the run's **screenshots** artifact to verify it worked.
 | `CONTACT_EMAIL` | Secret | — | Confirmation email address |
 | `CONTACT_PHONE` | Secret | — | Phone number |
 | `YELP_SESSION` | Secret | — | Yelp session cookies (from `save_session.py`) |
+| `FAIL_ON_NO_SLOT` | GitHub Variable | `false` | Set to `true` if no matching slot should fail the workflow |
 
 Time preferences are set in `bot.py`:
 - **`EARLIEST_HOUR`** — 17 (5:00 PM)

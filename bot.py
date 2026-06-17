@@ -15,13 +15,12 @@ Yelp reservation page structure (discovered via Chrome inspection):
 
 import os
 import sys
-import json
 import logging
 import random
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from playwright.sync_api import sync_playwright
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,12 +32,44 @@ log = logging.getLogger(__name__)
 BUSINESS_ALIAS = "din-tai-fung-scottsdale-5"
 RESERVATION_URL = f"https://www.yelp.com/reservations/{BUSINESS_ALIAS}"
 
+
+def env_str(name, default=""):
+    """Read an environment variable, treating empty strings like unset values."""
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()
+
+
+def env_int(name, default):
+    value = env_str(name, str(default))
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+
+
+def env_csv(name, default):
+    values = [value.strip() for value in env_str(name, default).split(",")]
+    values = [value for value in values if value]
+    return values or [value.strip() for value in default.split(",") if value.strip()]
+
+
+def env_bool(name, default=False):
+    value = env_str(name, "true" if default else "false").lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false, got {value!r}")
+
+
 # Reservation preferences (overridable via env vars)
-PARTY_SIZE     = int(os.getenv("PARTY_SIZE", "5"))
-EARLIEST_HOUR  = int(os.getenv("EARLIEST_HOUR", "17"))
-LATEST_HOUR    = int(os.getenv("LATEST_HOUR", "19"))
-_days_env      = os.getenv("TARGET_DAYS", "Saturday,Sunday")
-TARGET_DAYS    = set(d.strip() for d in _days_env.split(","))
+PARTY_SIZE     = env_int("PARTY_SIZE", 5)
+EARLIEST_HOUR  = env_int("EARLIEST_HOUR", 17)
+LATEST_HOUR    = env_int("LATEST_HOUR", 19)
+TARGET_DAYS    = set(env_csv("TARGET_DAYS", "Saturday,Sunday"))
+FAIL_ON_NO_SLOT = env_bool("FAIL_ON_NO_SLOT", False)
 
 # Contact info (stored as GitHub secrets)
 CONTACT_NAME   = os.getenv("CONTACT_NAME", "")
@@ -52,8 +83,7 @@ SESSION_FILE   = "yelp_session.json"
 SCREENSHOT_DIR = "screenshots"
 
 # Preferred times to search, in order of preference (24h format for URL)
-_times_env = os.getenv("PREFERRED_TIMES", "1700,1730,1800,1830,1900")
-PREFERRED_TIMES = [t.strip() for t in _times_env.split(",")]
+PREFERRED_TIMES = env_csv("PREFERRED_TIMES", "1700,1730,1800,1830,1900")
 
 
 def run_bot():
@@ -134,9 +164,13 @@ def run_bot():
                 break
 
             if not booked:
-                raise RuntimeError(
+                message = (
                     f"No preferred slots found on {', '.join(TARGET_DAYS)}."
                 )
+                if FAIL_ON_NO_SLOT:
+                    raise RuntimeError(message)
+                log.warning(message)
+                log.info("No reservation booked; completing successfully.")
 
         except Exception as exc:
             log.error(f"Bot failed: {exc}")
@@ -153,7 +187,7 @@ def run_bot():
 
 def upcoming_target_dates():
     """Return the next Saturday and Sunday as datetime.date objects."""
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     dates = []
     for offset in range(1, 8):
         d = today + timedelta(days=offset)
@@ -171,7 +205,8 @@ def is_preferred_time(text: str) -> bool:
     for fmt in ("%I:%M %p", "%I %p"):
         try:
             t = datetime.strptime(text, fmt)
-            return EARLIEST_HOUR <= t.hour < LATEST_HOUR
+            minutes = (t.hour * 60) + t.minute
+            return (EARLIEST_HOUR * 60) <= minutes <= (LATEST_HOUR * 60)
         except ValueError:
             continue
     return False
